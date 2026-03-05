@@ -5,58 +5,90 @@ Lagrnge, the precursor to hamilton, is the hardware layer to the docker ecosyste
 ## Setting up the hard drive
 Lagrnge is designated to operate on btrfs. However, Pi OS requires ext4 for its root, meaning we need to partition the drive 3 ways into fat32, ext4, and btrfs for boot, root, and data.
 
-1. Use `lsblk` to identify the name of the drive.
-2. Create partitions `sudo fdisk /dev/sdX`
-    Once in, hit `g` and then `n` to create a new partition.
-    Use the defaults number and sector, then designate the size using +[SIZE]
+### Step 1: Flash the Official PiOS Image
 
-    For my stack, I used `1: +512M`, `2: +55G`, `3: remaining size`
-3. Format the partitions accordingly:
-    ```bash
-    # 1. Format the boot partition as FAT32
-    sudo mkfs.vfat -F32 /dev/sdX1
+Start with a completely clean slate. Download the official Raspberry Pi OS Bookworm 64-bit image. Since the official downloads are compressed (`.img.xz`), we will decompress and write it directly to the SSD in one step.
 
-    # 2. Format the root partition as ext4
-    sudo mkfs.ext4 /dev/sdX2
+Identify your drive using `lsblk` (I will use `/dev/sdX` as a placeholder). Make absolutely sure you have the correct drive, as this will wipe it.
+```bash
+# Decompress and flash the image directly to the SSD
+xzcat 2024-03-15-raspios-bookworm-arm64.img.xz | sudo dd of=/dev/sdX bs=4M status=progress
+sudo sync
+```
 
-    # 3. Format the data partition as btrfs
-    sudo mkfs.btrfs -f /dev/sdX3
-    ```
+### Step 2: Build the Physical Roadblock
 
-4. At this point, you will download and extract Pi OS (I used trixie lite) directly into the `/mnt` directory.
+Right now, your SSD has a ~500MB FAT32 boot partition (Partition 1) and a ~4GB ext4 root partition (Partition 2). The rest of the 500GB drive is empty space. We need to cap Partition 2 at 50GB and fill the remaining space with Partition 3.
+```bash
+sudo parted /dev/sdX
+```
 
-    ```bash
-    # Example extraction command (requires bsdtar to preserve file attributes)
-    sudo bsdtar -xpf ArchLinuxARM-rpi-aarch64-latest.tar.gz -C /mnt
-    sudo sync
-    ```
+Inside the `parted` prompt, run the following exact commands to manipulate the MBR table:
 
-5. Tell the new OS about your custom partition layout so it knows how to mount the ext4 root and btrfs data partitions on boot.
+1. Type `resizepart 2 50GB` and press Enter. (This moves the boundary of Partition 2 to the 50GB mark, though the filesystem inside remains 4GB for now).
+2. Type `mkpart primary btrfs 50GB 100%` and press Enter. (This creates Partition 3, acting as a physical wall that blocks Partition 2 from expanding any further).
+3. Type `quit` and press Enter.
 
-    Find the UUIDs of your partitions:
-    ```bash
-    lsblk -f /dev/sdX
-    ```
+Now, expand the filesystem to fill this newly resized 50GB partition:
+```bash
+# Verify the filesystem is clean
+sudo e2fsck -f /dev/sdX2
 
-    Edit the fstab file on the SSD:
-    ```bash
-    sudo nano /mnt/etc/fstab
-    ```
+# Expand the 4GB ext4 filesystem to perfectly fill the 50GB partition
+sudo resize2fs /dev/sdX2
+```
 
-    Add the entries using the UUIDs you just gathered. It should look similar to this:
-    ```plaintext
-    # Boot
-    UUID=XXXX-XXXX                            /boot   vfat    defaults        0       2
-    # Root OS
-    UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx /       ext4    defaults,noatime 0       1
-    # Docker/SDR Storage
-    UUID=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy /data   btrfs   rw,relatime,space_cache=v2,compress=zstd 0 0
-    ```
+### Step 3: Format the New Data Partition
 
-    (Note: Adding `compress=zstd` to the btrfs mount options is highly recommended for SDDs, as it saves space and reduces write amplification without noticeable CPU overhead).
+Partition 3 now exists in the partition table, but it needs the btrfs filesystem applied to it.
+```bash
+sudo mkfs.btrfs -f /dev/sdX3
+```
 
-6. Sync the filesystem to ensure all cache is written to the SSD, unmount everything, and safely eject the drive.
-    ```bash
-    sudo sync
-    sudo umount -R /mnt
-    ```
+### Step 4: Map the Storage in fstab
+
+We need to configure the PiOS root filesystem so it automatically mounts your new `/data` partition every time the Pi boots.
+
+First, fetch the UUID of your new btrfs partition:
+```bash
+lsblk -f /dev/sdX
+```
+
+Copy the UUID for `/dev/sdX3`.
+
+Next, mount the PiOS root and boot partitions to your host machine so you can edit their configuration files:
+```bash
+sudo mount /dev/sdX2 /mnt
+sudo mkdir -p /mnt/data /mnt/boot/firmware
+sudo mount /dev/sdX1 /mnt/boot/firmware
+```
+
+**Disable the auto-expander**:
+Because you manually resized the filesystem on your host machine, the PiOS `init_resize.sh` script will fail since Partition 2 is no longer the last partition on the drive. We need to delete it.
+```bash
+sudo nano /mnt/boot/firmware/cmdline.txt
+```
+*Remove the instruction that says `init=/usr/lib/raspi-config/init_resize.sh` entirely from the line.* Save and exit.
+
+**Edit the filesystem table**:
+```bash
+sudo nano /mnt/etc/fstab
+```
+
+You will see the existing `PARTUUID` entries for `/boot/firmware` and `/`. Leave those exactly as they are. Add your new btrfs partition to the bottom of the file:
+```plaintext
+UUID=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy /data   btrfs   rw,relatime,space_cache=v2,compress=zstd 0 0
+```
+> **Note:** The `compress=zstd` flag is highly recommended. It transparently compresses your Docker logs and SDR data as it writes to the SSD, improving read/write lifespan and saving space with practically zero CPU overhead.
+
+### Step 5: Unmount and First Boot
+
+Safely unmount the SSD from your host machine.
+```bash
+sudo sync
+sudo umount -R /mnt
+```
+
+Plug the SSD into your Raspberry Pi 5 and power it on.
+
+Here is what happens under the hood during this first boot: The PiOS bootloader will cleanly read the native MBR partition and boot the kernel. Since you manually expanded the filesystem and removed the auto-expander string, the Pi will boot instantly. It will cleanly mount your pre-expanded 50GB `ext4` root partition and your `btrfs` partition at `/data` directly with zero issues.
