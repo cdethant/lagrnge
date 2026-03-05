@@ -92,3 +92,40 @@ sudo umount -R /mnt
 Plug the SSD into your Raspberry Pi 5 and power it on.
 
 Here is what happens under the hood during this first boot: The PiOS bootloader will cleanly read the native MBR partition and boot the kernel. Since you manually expanded the filesystem and removed the auto-expander string, the Pi will boot instantly. It will cleanly mount your pre-expanded 50GB `ext4` root partition and your `btrfs` partition at `/data` directly with zero issues.
+
+### Step 6: Post-Boot BTRFS Maintenance (Mandatory)
+
+Out of the box, Raspberry Pi OS does not include the BTRFS user-space tools. While the kernel can mount the `/data` partition flawlessly, you will need the utilities to maintain its long-term health.
+
+Once you have logged into your Raspberry Pi, you must run the following commands:
+
+**1. Install `btrfs-progs` & maintenance tools**
+This installs the core BTRFS tools and an incredibly useful set of automation scripts (`btrfsmaintenance`) which handles background balancing. Without balancing, Docker workloads can fragment the partition and cause fake "Disk Full" errors over time.
+```bash
+sudo apt update
+sudo apt install btrfs-progs btrfsmaintenance
+```
+
+**2. Configure and enable automatic data maintenance**
+BTRFS has the amazing ability to detect and silently "heal" data corruption (bit rot) using checksums, and background balancing prevents "Disk Full" fragment errors.
+
+Since PiOS is based on Debian, `btrfsmaintenance` uses a central configuration file rather than systemd templates. 
+
+1. Open the automation config file:
+```bash
+sudo nano /etc/default/btrfsmaintenance
+```
+
+2. Inside the file, find the default mount point variables and point them solely at your `/data` partition (or simply use `"auto"` to map all btrfs drives):
+```plaintext
+BTRFS_SCRUB_MOUNTPOINTS="/data"
+BTRFS_BALANCE_MOUNTPOINTS="/data"
+```
+*Save and exit the file.*
+
+3. Tell the system to apply your new configuration and generate the background timers automatically:
+```bash
+sudo systemctl restart btrfsmaintenance-refresh.service
+```
+
+With these tools configured, your BTRFS space will be completely self-managed, balancing fragmentation and healing data errors entirely in the background while you focus on your Docker containers!
