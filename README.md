@@ -1,6 +1,6 @@
 # Lagrnge - Raspberry Pi Docker Server Stack
 
-Lagrnge, the precursor to hamilton, is the hardware layer to the docker ecosystem for signal processing, agent finetuning, and network backend needs of my workflow/tinkering.
+Lagrnge, the precursor to hamilton, is the hardware layer to the docker ecosystem for signal processing, agent finetuning, and network backend needs of my workflow/tinkering. Here, you can find the setup to my containerized data pipelines.
 
 ## Setting up the hard drive
 Lagrnge is designated to operate on btrfs. However, Pi OS requires ext4 for its root, meaning we need to partition the drive 3 ways into fat32, ext4, and btrfs for boot, root, and data.
@@ -129,3 +129,7 @@ sudo systemctl restart btrfsmaintenance-refresh.service
 ```
 
 With these tools configured, your BTRFS space will be completely self-managed, balancing fragmentation and healing data errors entirely in the background while you focus on your Docker containers!
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
